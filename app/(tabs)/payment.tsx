@@ -56,7 +56,7 @@ export default function PaymentScreen() {
           onPress: async () => {
             try {
               setIsProcessingExit(true);
-              const result = await parkingSessionAPI.exit(activeSession.id);
+              const result = await parkingSessionAPI.exit(activeSession.session.id);
               
               Alert.alert(
                 'Thành công',
@@ -87,13 +87,20 @@ export default function PaymentScreen() {
   const currentPayment = activeSession
     ? {
         amount: null, // Will be calculated when exit
-        location: activeSession.parkingSlot.slotNumber,
-        startTime: formatDateTime(activeSession.entryTime).time,
+        location: activeSession.parkingSlot.slotCode || '',
+        startTime: formatDateTime(activeSession.session.entryTime).time,
         endTime: null,
-        date: formatDateTime(activeSession.entryTime).date,
-        duration: calculateDuration(activeSession.entryTime, activeSession.exitTime),
-        rate: activeSession.parkingSlot.parkingLot.pricePerHour,
-        sessionId: activeSession.id,
+        date: formatDateTime(activeSession.session.entryTime).date,
+        duration: (() => {
+          const hours = Math.floor(activeSession.session.durationHours);
+          const minutes = Math.round((activeSession.session.durationHours % 1) * 60);
+          if (hours > 0) {
+            return `${hours} giờ${minutes > 0 ? ` ${minutes} phút` : ''}`;
+          }
+          return `${minutes} phút`;
+        })(),
+        rate: activeSession.parkingLot.pricePerHour,
+        sessionId: activeSession.session.id,
       }
     : null;
 

@@ -68,11 +68,18 @@ export default function HomeScreen() {
   const currentParking = activeSession
     ? {
         isParked: true,
-        location: activeSession.parkingSlot.slotNumber,
-        startTime: formatDateTime(activeSession.entryTime).time,
-        date: formatDateTime(activeSession.entryTime).date,
-        duration: calculateDuration(activeSession.entryTime, activeSession.exitTime),
-        sessionId: activeSession.id,
+        location: activeSession.parkingSlot.slotCode || '',
+        startTime: formatDateTime(activeSession.session.entryTime).time,
+        date: formatDateTime(activeSession.session.entryTime).date,
+        duration: (() => {
+          const hours = Math.floor(activeSession.session.durationHours);
+          const minutes = Math.round((activeSession.session.durationHours % 1) * 60);
+          if (hours > 0) {
+            return `${hours} giờ${minutes > 0 ? ` ${minutes} phút` : ''}`;
+          }
+          return `${minutes} phút`;
+        })(),
+        sessionId: activeSession.session.id,
       }
     : {
         isParked: false,

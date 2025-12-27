@@ -398,6 +398,20 @@ export const parkingSessionAPI = {
     return parkingSessionAPI.getAll({ status: 'active' });
   },
 
+  getCurrent: async () => {
+    const response = await apiRequest('/parking-sessions/my/current');
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        // No active parking session
+        return { hasActiveParking: false, currentParking: null };
+      }
+      throw new Error('Failed to fetch current parking session');
+    }
+
+    return response.json();
+  },
+
   getCompleted: async () => {
     return parkingSessionAPI.getAll({ status: 'completed' });
   },
@@ -413,6 +427,39 @@ export const parkingSessionAPI = {
     }
 
     return response.json();
+  },
+};
+
+// Parking Lot APIs
+export const parkingLotAPI = {
+  getById: async (id: number) => {
+    try {
+      const response = await apiRequest(`/parking-lots/${id}`);
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          await clearTokens();
+          throw new Error('Authentication failed. Please login again.');
+        }
+
+        const errorText = await response.text();
+        let errorMessage = 'Failed to fetch parking lot';
+        try {
+          const errorJson = JSON.parse(errorText);
+          errorMessage = errorJson.message || errorMessage;
+        } catch {
+          errorMessage = errorText || errorMessage;
+        }
+        throw new Error(errorMessage);
+      }
+
+      return response.json();
+    } catch (error: any) {
+      if (error.message && (error.message.includes('fetch') || error.message.includes('Network'))) {
+        throw new Error('Network error. Please check your connection and ensure the API server is running.');
+      }
+      throw error;
+    }
   },
 };
 

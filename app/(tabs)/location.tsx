@@ -1,5 +1,6 @@
-import React from 'react';
-import { StyleSheet, ScrollView, View, Dimensions, ActivityIndicator } from 'react-native';
+import React, { useState, useRef } from 'react';
+import { StyleSheet, ScrollView, View, Dimensions, ActivityIndicator, Image, Modal, TouchableOpacity, Pressable } from 'react-native';
+import Svg, { Polygon } from 'react-native-svg';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -8,6 +9,7 @@ import { Colors, PrimaryBlue, SuccessGreen, Gray50, Gray100, Gray900, White } fr
 import { useAuth } from '@/contexts/AuthContext';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useActiveParkingSession } from '@/hooks/useParkingSessions';
+import { useParkingLot } from '@/hooks/useParkingLot';
 
 const { width } = Dimensions.get('window');
 
@@ -15,6 +17,35 @@ export default function LocationScreen() {
   const colors = Colors['light'];
   const { user } = useAuth();
   const { activeSession, isLoading } = useActiveParkingSession();
+  const parkingLotId = activeSession?.parkingLot.id || null;
+  const { parkingLot, isLoading: isLoadingParkingLot, refetch: refetchParkingLot } = useParkingLot(parkingLotId);
+  
+  const [imageDimensions, setImageDimensions] = useState<{ width: number; height: number } | null>(null);
+  const [isMapModalVisible, setIsMapModalVisible] = useState(false);
+  const [modalMapUrl, setModalMapUrl] = useState<string | null>(null);
+  const scrollViewRef = useRef<ScrollView>(null);
+  
+  // Store map URL when modal opens
+  React.useEffect(() => {
+    if (isMapModalVisible) {
+      if (parkingLot?.map) {
+        setModalMapUrl(parkingLot.map);
+      } else if (parkingLotId) {
+        // If map not loaded, try to fetch
+        refetchParkingLot();
+      }
+    } else {
+      // Reset when modal closes
+      setModalMapUrl(null);
+    }
+  }, [isMapModalVisible, parkingLot?.map, parkingLotId, refetchParkingLot]);
+  
+  // Update modal map URL when parkingLot changes
+  React.useEffect(() => {
+    if (isMapModalVisible && parkingLot?.map) {
+      setModalMapUrl(parkingLot.map);
+    }
+  }, [parkingLot?.map, isMapModalVisible]);
 
   // Format date and time
   const formatDateTime = (dateString: string) => {
@@ -39,8 +70,15 @@ export default function LocationScreen() {
   };
 
   // Parse slot number to extract zone and spot
-  const parseSlotNumber = (slotNumber: string) => {
+  const parseSlotNumber = (slotNumber: string | undefined | null) => {
     // Format: "A-05" or "A-12"
+    if (!slotNumber || typeof slotNumber !== 'string') {
+      return {
+        zone: 'N/A',
+        spot: 'N/A',
+        full: slotNumber || '',
+      };
+    }
     const parts = slotNumber.split('-');
     return {
       zone: parts[0] || 'N/A',
@@ -49,16 +87,79 @@ export default function LocationScreen() {
     };
   };
 
+  // Calculate center point from polygon coordinates
+  const getPolygonCenter = (coordinates: number[][][]): { x: number; y: number } | null => {
+    if (!coordinates || coordinates.length === 0 || !coordinates[0] || coordinates[0].length === 0) {
+      return null;
+    }
+    const points = coordinates[0]; // Get first polygon
+    if (points.length < 3) return null;
+    
+    // Calculate centroid
+    let sumX = 0;
+    let sumY = 0;
+    let count = 0;
+    
+    // Skip last point if it's the same as first (closed polygon)
+    const endIndex = points.length > 0 && 
+                     points[0][0] === points[points.length - 1][0] && 
+                     points[0][1] === points[points.length - 1][1]
+                     ? points.length - 1 
+                     : points.length;
+    
+    for (let i = 0; i < endIndex; i++) {
+      sumX += points[i][0];
+      sumY += points[i][1];
+      count++;
+    }
+    
+    if (count === 0) return null;
+    
+    return {
+      x: sumX / count,
+      y: sumY / count,
+    };
+  };
+
+  // Scale polygon coordinates from original image size to displayed size
+  const scalePolygonCoordinates = (
+    coordinates: number[][][],
+    originalWidth: number,
+    originalHeight: number,
+    displayWidth: number,
+    displayHeight: number
+  ): string => {
+    if (!coordinates || coordinates.length === 0 || !coordinates[0]) {
+      return '';
+    }
+    
+    const points = coordinates[0];
+    const scaleX = displayWidth / originalWidth;
+    const scaleY = displayHeight / originalHeight;
+    
+    return points
+      .map(([x, y]) => `${x * scaleX},${y * scaleY}`)
+      .join(' ');
+  };
+
   const parkingInfo = activeSession
     ? {
         isParked: true,
-        location: activeSession.parkingSlot.slotNumber,
-        ...parseSlotNumber(activeSession.parkingSlot.slotNumber),
+        location: activeSession.parkingSlot.slotCode || '',
+        ...parseSlotNumber(activeSession.parkingSlot.slotCode),
         floor: 'Tầng 1', // API không có floor info, có thể thêm sau
-        startTime: formatDateTime(activeSession.entryTime).time,
-        date: formatDateTime(activeSession.entryTime).date,
-        duration: calculateDuration(activeSession.entryTime, activeSession.exitTime),
-        coordinates: { x: 3, y: 2 }, // Mock coordinates, có thể tính từ slotNumber
+        startTime: formatDateTime(activeSession.session.entryTime).time,
+        date: formatDateTime(activeSession.session.entryTime).date,
+        duration: (() => {
+          const hours = Math.floor(activeSession.session.durationHours);
+          const minutes = Math.round((activeSession.session.durationHours % 1) * 60);
+          if (hours > 0) {
+            return `${hours} giờ${minutes > 0 ? ` ${minutes} phút` : ''}`;
+          }
+          return `${minutes} phút`;
+        })(),
+        coordinates: activeSession.parkingSlot.coordinates,
+        polygonCenter: getPolygonCenter(activeSession.parkingSlot.coordinates),
       }
     : {
         isParked: false,
@@ -69,19 +170,42 @@ export default function LocationScreen() {
         startTime: '',
         date: '',
         duration: '',
-        coordinates: { x: -1, y: -1 },
+        coordinates: null,
+        polygonCenter: null,
       };
 
-  // Mock parking lot map (6x4 grid)
-  const parkingLot = Array.from({ length: 4 }, (_, row) =>
-    Array.from({ length: 6 }, (_, col) => ({
-      id: `${row}-${col}`,
-      occupied: parkingInfo.isParked && row === parkingInfo.coordinates.y && col === parkingInfo.coordinates.x,
-      reserved: false,
-    }))
-  );
+  // Calculate image display dimensions
+  const calculateImageSize = (originalWidth: number, originalHeight: number) => {
+    const maxWidth = width - 80; // Account for padding
+    const maxHeight = 400; // Max height for map
+    
+    const widthRatio = maxWidth / originalWidth;
+    const heightRatio = maxHeight / originalHeight;
+    const ratio = Math.min(widthRatio, heightRatio);
+    
+    return {
+      width: originalWidth * ratio,
+      height: originalHeight * ratio,
+      ratio,
+    };
+  };
 
-  if (isLoading) {
+  // Handle image load to get dimensions
+  React.useEffect(() => {
+    if (parkingLot?.map) {
+      Image.getSize(
+        parkingLot.map,
+        (width, height) => {
+          setImageDimensions({ width, height });
+        },
+        (error) => {
+          console.error('Error getting image size:', error);
+        }
+      );
+    }
+  }, [parkingLot?.map]);
+
+  if (isLoading || isLoadingParkingLot) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
         <ThemedView style={[styles.container, styles.loadingContainer]}>
@@ -132,27 +256,21 @@ export default function LocationScreen() {
 
             <ThemedView style={styles.infoDetails}>
               <ThemedView style={styles.infoRow}>
-                <ThemedText style={styles.infoLabel}>Khu vực:</ThemedText>
+                <ThemedText style={styles.infoLabel}>Địa điểm:</ThemedText>
                 <ThemedText type="defaultSemiBold" style={styles.infoValue}>
-                  {parkingInfo.zone}
-                </ThemedText>
-              </ThemedView>
-              <ThemedView style={styles.infoRow}>
-                <ThemedText style={styles.infoLabel}>Tầng:</ThemedText>
-                <ThemedText type="defaultSemiBold" style={styles.infoValue}>
-                  {parkingInfo.floor}
+                  {activeSession?.parkingLot.name || 'N/A'}
                 </ThemedText>
               </ThemedView>
               <ThemedView style={styles.infoRow}>
                 <ThemedText style={styles.infoLabel}>Vị trí:</ThemedText>
                 <ThemedText type="defaultSemiBold" style={styles.infoValue}>
-                  {parkingInfo.spot}
+                  {activeSession?.parkingSlot.slotCode || 'N/A'}
                 </ThemedText>
               </ThemedView>
               <ThemedView style={styles.infoRow}>
                 <ThemedText style={styles.infoLabel}>Biển số xe:</ThemedText>
                 <ThemedText type="defaultSemiBold" style={styles.infoValue}>
-                  {activeSession?.licensePlate || 'N/A'}
+                  {activeSession?.session.licensePlate || activeSession?.vehicle.licensePlate || 'N/A'}
                 </ThemedText>
               </ThemedView>
               <ThemedView style={styles.infoRow}>
@@ -176,34 +294,85 @@ export default function LocationScreen() {
               Sơ đồ bãi đỗ xe
             </ThemedText>
             <ThemedView style={styles.mapCard}>
-              <ThemedView style={styles.map}>
-                {parkingLot.map((row, rowIndex) => (
-                  <View key={rowIndex} style={styles.mapRow}>
-                    {row.map((spot) => (
-                      <ThemedView
-                        key={spot.id}
-                        style={[
-                          styles.parkingSpot,
-                          spot.occupied && { backgroundColor: SuccessGreen },
-                          !spot.occupied && { backgroundColor: Gray100, borderColor: '#D1D5DB' },
-                        ]}>
-                        {spot.occupied && (
-                          <IconSymbol name="car.fill" size={20} color={White} />
+              {parkingLot?.map ? (
+                <Pressable 
+                  style={styles.mapImageContainer}
+                  onPress={() => setIsMapModalVisible(true)}>
+                  {imageDimensions && (() => {
+                    const displaySize = calculateImageSize(imageDimensions.width, imageDimensions.height);
+                    const polygonPoints = parkingInfo.coordinates
+                      ? scalePolygonCoordinates(
+                          parkingInfo.coordinates,
+                          imageDimensions.width,
+                          imageDimensions.height,
+                          displaySize.width,
+                          displaySize.height
+                        )
+                      : '';
+                    
+                    return (
+                      <View style={{ width: displaySize.width, height: displaySize.height, position: 'relative' }}>
+                        <Image
+                          source={{ uri: parkingLot.map }}
+                          style={[
+                            styles.mapImage,
+                            { width: displaySize.width, height: displaySize.height },
+                          ]}
+                          resizeMode="contain"
+                        />
+                        {polygonPoints && (
+                          <Svg
+                            style={StyleSheet.absoluteFill}
+                            width={displaySize.width}
+                            height={displaySize.height}>
+                            <Polygon
+                              points={polygonPoints}
+                              fill="rgba(34, 197, 94, 0.2)"
+                              stroke={SuccessGreen}
+                              strokeWidth="2"
+                            />
+                          </Svg>
                         )}
-                      </ThemedView>
-                    ))}
-                  </View>
-                ))}
-              </ThemedView>
+                        {parkingInfo.polygonCenter && parkingInfo.polygonCenter.x >= 0 && parkingInfo.polygonCenter.y >= 0 && (() => {
+                          // Scale center point from original image to displayed size
+                          const scaleX = displaySize.width / imageDimensions.width;
+                          const scaleY = displaySize.height / imageDimensions.height;
+                          const markerX = parkingInfo.polygonCenter.x * scaleX;
+                          const markerY = parkingInfo.polygonCenter.y * scaleY;
+                          return (
+                            <View
+                              style={[
+                                styles.parkingSpotMarker,
+                                {
+                                  left: markerX,
+                                  top: markerY,
+                                },
+                              ]}>
+                              <IconSymbol name="location.fill" size={24} color={SuccessGreen} />
+                              <View style={styles.markerPulse} />
+                            </View>
+                          );
+                        })()}
+                      </View>
+                    );
+                  })()}
+                  {!imageDimensions && (
+                    <ActivityIndicator size="large" color={PrimaryBlue} />
+                  )}
+                </Pressable>
+              ) : (
+                <ThemedView style={styles.mapPlaceholder}>
+                  <ActivityIndicator size="large" color={PrimaryBlue} />
+                  <ThemedText style={styles.mapPlaceholderText}>Đang tải bản đồ...</ThemedText>
+                </ThemedView>
+              )}
               <ThemedView style={styles.mapLegend}>
-                <ThemedView style={styles.legendItem}>
-                  <ThemedView style={[styles.legendColor, { backgroundColor: SuccessGreen }]} />
-                  <ThemedText style={styles.legendText}>Xe của bạn</ThemedText>
-                </ThemedView>
-                <ThemedView style={styles.legendItem}>
-                  <ThemedView style={[styles.legendColor, { backgroundColor: Gray100, borderColor: '#D1D5DB' }]} />
-                  <ThemedText style={styles.legendText}>Trống</ThemedText>
-                </ThemedView>
+                <Pressable 
+                  onPress={() => setIsMapModalVisible(true)}
+                  style={styles.legendItem}>
+                  <IconSymbol name="location.fill" size={16} color={SuccessGreen} />
+                  <ThemedText style={styles.legendText}>Vị trí xe của bạn (Nhấn để xem lớn)</ThemedText>
+                </Pressable>
               </ThemedView>
             </ThemedView>
           </ThemedView>
@@ -222,6 +391,142 @@ export default function LocationScreen() {
           </ThemedView>
         </ScrollView>
       </ThemedView>
+
+      {/* Fullscreen Map Modal with Zoom */}
+      <Modal
+        visible={isMapModalVisible}
+        transparent={false}
+        animationType="fade"
+        onRequestClose={() => setIsMapModalVisible(false)}>
+        <SafeAreaView style={styles.modalContainer} edges={['top', 'bottom']}>
+          <View style={styles.modalHeader}>
+            <ThemedText type="title" style={styles.modalTitle}>Sơ đồ bãi đỗ xe</ThemedText>
+            <TouchableOpacity
+              onPress={() => setIsMapModalVisible(false)}
+              style={styles.closeButton}>
+              <IconSymbol name="xmark.circle.fill" size={32} color={Gray900} />
+            </TouchableOpacity>
+          </View>
+          {(() => {
+            const mapUrl = modalMapUrl || parkingLot?.map;
+            
+            if (!mapUrl) {
+              return (
+                <View style={styles.modalLoadingContainer}>
+                  <ActivityIndicator size="large" color={PrimaryBlue} />
+                  <ThemedText style={styles.modalLoadingText}>
+                    {isLoadingParkingLot ? 'Đang tải bản đồ...' : 'Không tìm thấy bản đồ'}
+                  </ThemedText>
+                </View>
+              );
+            }
+
+            const screenWidth = Dimensions.get('window').width;
+            const screenHeight = Dimensions.get('window').height - 100;
+            
+            // Use imageDimensions if available, otherwise use screen dimensions as fallback
+            let displayWidth = screenWidth;
+            let displayHeight = screenHeight;
+            let polygonPoints = '';
+            let markerScaleX = 1;
+            let markerScaleY = 1;
+            
+            if (imageDimensions) {
+              const imageAspectRatio = imageDimensions.width / imageDimensions.height;
+              const screenAspectRatio = screenWidth / screenHeight;
+              
+              if (imageAspectRatio > screenAspectRatio) {
+                displayHeight = screenWidth / imageAspectRatio;
+              } else {
+                displayWidth = screenHeight * imageAspectRatio;
+              }
+              
+              polygonPoints = parkingInfo.coordinates
+                ? scalePolygonCoordinates(
+                    parkingInfo.coordinates,
+                    imageDimensions.width,
+                    imageDimensions.height,
+                    displayWidth,
+                    displayHeight
+                  )
+                : '';
+              
+              markerScaleX = displayWidth / imageDimensions.width;
+              markerScaleY = displayHeight / imageDimensions.height;
+            }
+            
+            return (
+              <ScrollView
+                ref={scrollViewRef}
+                style={styles.modalScrollView}
+                contentContainerStyle={{
+                  width: Math.max(displayWidth * 5, screenWidth),
+                  height: Math.max(displayHeight * 5, screenHeight),
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                }}
+                maximumZoomScale={5}
+                minimumZoomScale={1}
+                showsHorizontalScrollIndicator={true}
+                showsVerticalScrollIndicator={true}
+                bouncesZoom={true}
+                scrollEnabled={true}
+                centerContent={true}>
+                <View
+                  style={{
+                    width: displayWidth,
+                    height: displayHeight,
+                    position: 'relative',
+                  }}>
+                  <Image
+                    source={{ uri: mapUrl }}
+                    style={{
+                      width: displayWidth,
+                      height: displayHeight,
+                    }}
+                    resizeMode="contain"
+                    onLoad={(e) => {
+                      // Get image dimensions when image loads
+                      if (!imageDimensions && e.nativeEvent.source?.width && e.nativeEvent.source?.height) {
+                        setImageDimensions({
+                          width: e.nativeEvent.source.width,
+                          height: e.nativeEvent.source.height,
+                        });
+                      }
+                    }}
+                  />
+                  {polygonPoints && (
+                    <Svg
+                      style={StyleSheet.absoluteFill}
+                      width={displayWidth}
+                      height={displayHeight}>
+                      <Polygon
+                        points={polygonPoints}
+                        fill="rgba(34, 197, 94, 0.2)"
+                        stroke={SuccessGreen}
+                        strokeWidth="3"
+                      />
+                    </Svg>
+                  )}
+                  {parkingInfo.polygonCenter && imageDimensions && (
+                    <View
+                      style={[
+                        styles.modalMarker,
+                        {
+                          left: parkingInfo.polygonCenter.x * markerScaleX,
+                          top: parkingInfo.polygonCenter.y * markerScaleY,
+                        },
+                      ]}>
+                      <IconSymbol name="location.fill" size={32} color={SuccessGreen} />
+                      <View style={styles.modalMarkerPulse} />
+                    </View>
+                  )}
+                </View>
+              </ScrollView>
+            );
+          })()}
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -318,22 +623,42 @@ const styles = StyleSheet.create({
     elevation: 4,
     borderWidth: 0,
   },
-  map: {
+  mapImageContainer: {
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+    minHeight: 200,
+  },
+  mapImage: {
+    width: '100%',
+    maxWidth: width - 80,
+  },
+  mapPlaceholder: {
+    height: 200,
+    justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 20,
   },
-  mapRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 8,
+  mapPlaceholderText: {
+    marginTop: 12,
+    color: '#6B7280',
+    fontSize: 14,
   },
-  parkingSpot: {
-    width: (width - 80) / 6 - 8,
-    height: (width - 80) / 6 - 8,
-    borderRadius: 8,
-    justifyContent: 'center',
+  parkingSpotMarker: {
+    position: 'absolute',
     alignItems: 'center',
-    borderWidth: 1,
+    justifyContent: 'center',
+    transform: [{ translateX: -12 }, { translateY: -12 }],
+  },
+  markerPulse: {
+    position: 'absolute',
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: SuccessGreen,
+    opacity: 0.3,
+    transform: [{ scale: 2 }],
   },
   mapLegend: {
     flexDirection: 'row',
@@ -393,5 +718,63 @@ const styles = StyleSheet.create({
     marginTop: 12,
     color: '#6B7280',
   },
+  modalContainer: {
+    flex: 1,
+    backgroundColor: White,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: Gray100,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: Gray900,
+  },
+  closeButton: {
+    padding: 4,
+  },
+  modalScrollView: {
+    flex: 1,
+  },
+  modalScrollContent: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: Dimensions.get('window').height - 100,
+  },
+  modalImageContainer: {
+    position: 'relative',
+  },
+  modalImage: {
+    // Image size will be set dynamically
+  },
+  modalLoadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalLoadingText: {
+    marginTop: 12,
+    color: '#6B7280',
+    fontSize: 14,
+  },
+  modalMarker: {
+    position: 'absolute',
+    alignItems: 'center',
+    justifyContent: 'center',
+    transform: [{ translateX: -16 }, { translateY: -16 }],
+  },
+  modalMarkerPulse: {
+    position: 'absolute',
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: SuccessGreen,
+    opacity: 0.3,
+    transform: [{ scale: 2 }],
+  },
 });
-

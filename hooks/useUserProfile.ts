@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { authAPI } from '@/services/api';
+import { useAuth } from '@/contexts/AuthContext';
 
 export interface UserProfile {
   id: number;
@@ -21,15 +22,29 @@ export interface UserProfile {
 }
 
 export function useUserProfile() {
+  const { isAuthenticated, isLoading: authLoading } = useAuth();
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchProfile();
-  }, []);
+    // Chỉ fetch khi đã authenticated và không đang loading auth
+    if (!authLoading && isAuthenticated) {
+      fetchProfile();
+    } else if (!authLoading && !isAuthenticated) {
+      // Nếu chưa authenticated, set null và không loading
+      setProfile(null);
+      setIsLoading(false);
+    }
+  }, [isAuthenticated, authLoading]);
 
   const fetchProfile = async () => {
+    // Không fetch nếu chưa authenticated
+    if (!isAuthenticated) {
+      console.warn('[useUserProfile] Not authenticated, skipping fetch');
+      return;
+    }
+
     try {
       setIsLoading(true);
       setError(null);
@@ -43,6 +58,6 @@ export function useUserProfile() {
     }
   };
 
-  return { profile, isLoading, error, refetch: fetchProfile };
+  return { profile, isLoading: isLoading || authLoading, error, refetch: fetchProfile };
 }
 

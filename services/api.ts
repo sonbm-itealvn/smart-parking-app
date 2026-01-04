@@ -428,6 +428,20 @@ export const parkingSessionAPI = {
 
     return response.json();
   },
+
+  previewFee: async () => {
+    const response = await apiRequest('/parking-sessions/my/current/preview-fee');
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error('Không có phiên đỗ xe đang hoạt động');
+      }
+      const error = await response.json();
+      throw new Error(error.message || 'Failed to preview fee');
+    }
+
+    return response.json();
+  },
 };
 
 // Parking Lot APIs

@@ -14,7 +14,8 @@ export default function PaymentScreen() {
   const [activeTab, setActiveTab] = useState<'payment' | 'history'>('payment');
   const { activeSession, isLoading: isLoadingActive, refetch: refetchActive } = useActiveParkingSession();
   const { sessions: completedSessions, isLoading: isLoadingHistory, refetch: refetchHistory } = useParkingSessions('completed');
-  const [isProcessingExit, setIsProcessingExit] = useState(false);
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+  const [feePreview, setFeePreview] = useState<any>(null);
 
   // Format date and time
   const formatDateTime = (dateString: string) => {
@@ -43,63 +44,41 @@ export default function PaymentScreen() {
     return amount.toLocaleString('vi-VN') + 'đ';
   };
 
-  const handleExitParking = async () => {
-    if (!activeSession) return;
-
-    Alert.alert(
-      'Xác nhận',
-      'Bạn có chắc chắn muốn kết thúc phiên đỗ xe?',
-      [
-        { text: 'Hủy', style: 'cancel' },
-        {
-          text: 'Xác nhận',
-          onPress: async () => {
-            try {
-              setIsProcessingExit(true);
-              const result = await parkingSessionAPI.exit(activeSession.session.id);
-              
-              Alert.alert(
-                'Thành công',
-                `Số tiền cần thanh toán: ${formatCurrency(result.feeDetails?.totalFee || result.parkingSession.fee)}`,
-                [
-                  {
-                    text: 'OK',
-                    onPress: () => {
-                      refetchActive();
-                      refetchHistory();
-                      setActiveTab('history');
-                    },
-                  },
-                ]
-              );
-            } catch (error: any) {
-              Alert.alert('Lỗi', error.message || 'Không thể kết thúc phiên đỗ xe');
-            } finally {
-              setIsProcessingExit(false);
-            }
-          },
-        },
-      ]
-    );
+  const handlePreviewFee = async () => {
+    try {
+      setIsLoadingPreview(true);
+      const result = await parkingSessionAPI.previewFee();
+      setFeePreview(result);
+    } catch (error: any) {
+      Alert.alert('Lỗi', error.message || 'Không thể xem trước tiền đỗ xe');
+    } finally {
+      setIsLoadingPreview(false);
+    }
   };
 
   // Prepare current payment data
   const currentPayment = activeSession
     ? {
-        amount: null, // Will be calculated when exit
-        location: activeSession.parkingSlot.slotCode || '',
-        startTime: formatDateTime(activeSession.session.entryTime).time,
+        amount: feePreview?.feePreview?.estimatedFee || null,
+        location: feePreview?.parkingSlot?.slotCode || activeSession.parkingSlot.slotCode || '',
+        startTime: feePreview?.feePreview?.entryTime 
+          ? formatDateTime(feePreview.feePreview.entryTime).time 
+          : formatDateTime(activeSession.session.entryTime).time,
         endTime: null,
-        date: formatDateTime(activeSession.session.entryTime).date,
-        duration: (() => {
-          const hours = Math.floor(activeSession.session.durationHours);
-          const minutes = Math.round((activeSession.session.durationHours % 1) * 60);
-          if (hours > 0) {
-            return `${hours} giờ${minutes > 0 ? ` ${minutes} phút` : ''}`;
-          }
-          return `${minutes} phút`;
-        })(),
-        rate: activeSession.parkingLot.pricePerHour,
+        date: feePreview?.feePreview?.entryTime 
+          ? formatDateTime(feePreview.feePreview.entryTime).date 
+          : formatDateTime(activeSession.session.entryTime).date,
+        duration: feePreview?.feePreview?.exactDuration
+          ? `${feePreview.feePreview.exactDuration.hours} giờ${feePreview.feePreview.exactDuration.minutes > 0 ? ` ${feePreview.feePreview.exactDuration.minutes} phút` : ''}`
+          : (() => {
+              const hours = Math.floor(activeSession.session.durationHours);
+              const minutes = Math.round((activeSession.session.durationHours % 1) * 60);
+              if (hours > 0) {
+                return `${hours} giờ${minutes > 0 ? ` ${minutes} phút` : ''}`;
+              }
+              return `${minutes} phút`;
+            })(),
+        rate: feePreview?.parkingLot?.pricePerHour || activeSession.parkingLot.pricePerHour,
         sessionId: activeSession.session.id,
       }
     : null;
@@ -168,10 +147,17 @@ export default function PaymentScreen() {
                       </ThemedView>
 
                       <ThemedView style={styles.amountContainer}>
-                        <ThemedText style={styles.amountLabel}>Số tiền sẽ được tính khi kết thúc</ThemedText>
+                        <ThemedText style={styles.amountLabel}>
+                          {feePreview ? 'Ước tính tiền đỗ xe' : 'Số tiền sẽ được tính khi kết thúc'}
+                        </ThemedText>
                         <ThemedText type="title" style={styles.amount}>
                           {formatCurrency(currentPayment.amount || 0)}
                         </ThemedText>
+                        {feePreview?.feePreview?.note && (
+                          <ThemedText style={styles.noteText}>
+                            {feePreview.feePreview.note}
+                          </ThemedText>
+                        )}
                       </ThemedView>
 
                       <ThemedView style={styles.paymentDetails}>
@@ -208,15 +194,15 @@ export default function PaymentScreen() {
                       </ThemedView>
 
                       <TouchableOpacity
-                        style={[styles.payButton, isProcessingExit && styles.payButtonDisabled]}
-                        onPress={handleExitParking}
-                        disabled={isProcessingExit}>
-                        {isProcessingExit ? (
+                        style={[styles.payButton, isLoadingPreview && styles.payButtonDisabled]}
+                        onPress={handlePreviewFee}
+                        disabled={isLoadingPreview}>
+                        {isLoadingPreview ? (
                           <ActivityIndicator size="small" color={White} />
                         ) : (
                           <>
-                            <IconSymbol name="arrow.turn.up.right" size={20} color={White} />
-                            <ThemedText style={styles.payButtonText}>Kết thúc phiên đỗ xe</ThemedText>
+                            <IconSymbol name="eye.fill" size={20} color={White} />
+                            <ThemedText style={styles.payButtonText}>Xem trước tiền đỗ xe</ThemedText>
                           </>
                         )}
                       </TouchableOpacity>
@@ -567,6 +553,13 @@ const styles = StyleSheet.create({
   },
   payButtonDisabled: {
     opacity: 0.6,
+  },
+  noteText: {
+    fontSize: 12,
+    color: '#6B7280',
+    marginTop: 8,
+    textAlign: 'center',
+    fontStyle: 'italic',
   },
 });
 

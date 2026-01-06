@@ -5,7 +5,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const BASE_URL = 'http://192.168.0.32:3000/api';
+const BASE_URL = 'http://192.168.2.90:3000/api';
 
 // Token storage keys
 const ACCESS_TOKEN_KEY = 'access_token';

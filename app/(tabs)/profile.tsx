@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
+import { StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Modal, Pressable } from 'react-native';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -15,6 +15,7 @@ export default function ProfileScreen() {
   const { user, logout, refreshUser } = useAuth();
   const { profile, isLoading, refetch } = useUserProfile();
   const router = useRouter();
+  const [showVehiclesModal, setShowVehiclesModal] = useState(false);
 
   useEffect(() => {
     // Refresh profile when screen loads
@@ -81,23 +82,36 @@ export default function ProfileScreen() {
 
           {/* Profile Information */}
           <ThemedView style={styles.infoContainer}>
-            {profileItems.map((item, index) => (
-              <ThemedView
-                key={index}
-                style={styles.infoItem}>
-                <ThemedView style={styles.infoItemLeft}>
-                  <ThemedView style={styles.infoIconContainer}>
-                    <IconSymbol name={item.icon as any} size={22} color={PrimaryBlue} />
+            {profileItems.map((item, index) => {
+              const isLicensePlate = item.label === 'Biển số xe';
+              return (
+                <TouchableOpacity
+                  key={index}
+                  style={styles.infoItem}
+                  onPress={isLicensePlate && displayUser?.vehicles && displayUser.vehicles.length > 0 
+                    ? () => setShowVehiclesModal(true) 
+                    : undefined}
+                  disabled={!isLicensePlate || !displayUser?.vehicles || displayUser.vehicles.length === 0}
+                  activeOpacity={isLicensePlate && displayUser?.vehicles && displayUser.vehicles.length > 0 ? 0.7 : 1}>
+                  <ThemedView style={styles.infoItemLeft}>
+                    <ThemedView style={styles.infoIconContainer}>
+                      <IconSymbol name={item.icon as any} size={22} color={PrimaryBlue} />
+                    </ThemedView>
+                    <ThemedView style={styles.infoItemContent}>
+                      <ThemedText style={styles.infoLabel}>{item.label}</ThemedText>
+                      <ThemedView style={styles.infoValueContainer}>
+                        <ThemedText type="defaultSemiBold" style={styles.infoValue}>
+                          {item.value}
+                        </ThemedText>
+                        {isLicensePlate && displayUser?.vehicles && displayUser.vehicles.length > 0 && (
+                          <IconSymbol name="chevron.right" size={16} color="#9CA3AF" style={styles.chevronIcon} />
+                        )}
+                      </ThemedView>
+                    </ThemedView>
                   </ThemedView>
-                  <ThemedView style={styles.infoItemContent}>
-                    <ThemedText style={styles.infoLabel}>{item.label}</ThemedText>
-                    <ThemedText type="defaultSemiBold" style={styles.infoValue}>
-                      {item.value}
-                    </ThemedText>
-                  </ThemedView>
-                </ThemedView>
-              </ThemedView>
-            ))}
+                </TouchableOpacity>
+              );
+            })}
           </ThemedView>
 
           {/* Vehicles Section */}
@@ -189,6 +203,57 @@ export default function ProfileScreen() {
           </ThemedView>
         </ScrollView>
       </ThemedView>
+
+      {/* Vehicles Modal */}
+      <Modal
+        visible={showVehiclesModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowVehiclesModal(false)}>
+        <Pressable 
+          style={styles.modalOverlay}
+          onPress={() => setShowVehiclesModal(false)}>
+          <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
+            <ThemedView style={styles.modalHeader}>
+              <ThemedText type="subtitle" style={styles.modalTitle}>
+                Danh sách biển số xe
+              </ThemedText>
+              <TouchableOpacity
+                onPress={() => setShowVehiclesModal(false)}
+                style={styles.modalCloseButton}>
+                <IconSymbol name="xmark.circle.fill" size={24} color={Gray900} />
+              </TouchableOpacity>
+            </ThemedView>
+            <ScrollView style={styles.modalBody}>
+              {displayUser?.vehicles && displayUser.vehicles.length > 0 ? (
+                displayUser.vehicles.map((vehicle) => (
+                  <ThemedView key={vehicle.id} style={styles.modalVehicleItem}>
+                    <ThemedView style={styles.modalVehicleLeft}>
+                      <ThemedView style={[styles.modalVehicleIconContainer, { backgroundColor: Blue100 }]}>
+                        <IconSymbol name="car.fill" size={20} color={PrimaryBlue} />
+                      </ThemedView>
+                      <ThemedView>
+                        <ThemedText type="defaultSemiBold" style={styles.modalVehiclePlate}>
+                          {vehicle.licensePlate}
+                        </ThemedText>
+                        <ThemedText style={styles.modalVehicleType}>
+                          {vehicle.vehicleType === 'car' ? 'Ô tô' : vehicle.vehicleType === 'motorcycle' ? 'Xe máy' : 'Xe tải'}
+                        </ThemedText>
+                      </ThemedView>
+                    </ThemedView>
+                  </ThemedView>
+                ))
+              ) : (
+                <ThemedView style={styles.modalEmptyContainer}>
+                  <ThemedText style={styles.modalEmptyText}>
+                    Chưa có xe nào được đăng ký
+                  </ThemedText>
+                </ThemedView>
+              )}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -270,6 +335,14 @@ const styles = StyleSheet.create({
   infoValue: {
     fontSize: 16,
     color: Gray900,
+  },
+  infoValueContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  chevronIcon: {
+    marginLeft: 4,
   },
   actionsContainer: {
     paddingHorizontal: 20,
@@ -416,6 +489,75 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: PrimaryBlue,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: White,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '80%',
+    paddingBottom: 20,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: Gray100,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: Gray900,
+  },
+  modalCloseButton: {
+    padding: 4,
+  },
+  modalBody: {
+    padding: 20,
+  },
+  modalVehicleItem: {
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 10,
+    backgroundColor: Gray50,
+    borderWidth: 1,
+    borderColor: Gray100,
+  },
+  modalVehicleLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  modalVehicleIconContainer: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalVehiclePlate: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: Gray900,
+    marginBottom: 4,
+  },
+  modalVehicleType: {
+    fontSize: 14,
+    color: '#6B7280',
+  },
+  modalEmptyContainer: {
+    padding: 40,
+    alignItems: 'center',
+  },
+  modalEmptyText: {
+    fontSize: 14,
+    color: '#6B7280',
   },
 });
 

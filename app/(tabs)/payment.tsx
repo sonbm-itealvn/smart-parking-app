@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, ScrollView, TouchableOpacity, View, ActivityIndicator, Alert } from 'react-native';
+import { StyleSheet, ScrollView, TouchableOpacity, View, ActivityIndicator, Alert, Modal, Pressable } from 'react-native';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -13,9 +13,12 @@ export default function PaymentScreen() {
   const colors = Colors['light'];
   const [activeTab, setActiveTab] = useState<'payment' | 'history'>('payment');
   const { activeSession, isLoading: isLoadingActive, refetch: refetchActive } = useActiveParkingSession();
+  const { sessions: activeSessions, isLoading: isLoadingActiveSessions } = useParkingSessions('active');
   const { sessions: completedSessions, isLoading: isLoadingHistory, refetch: refetchHistory } = useParkingSessions('completed');
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [feePreview, setFeePreview] = useState<any>(null);
+  const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
+  const [showVehicleSelector, setShowVehicleSelector] = useState(false);
 
   // Format date and time
   const formatDateTime = (dateString: string) => {
@@ -44,42 +47,85 @@ export default function PaymentScreen() {
     return amount.toLocaleString('vi-VN') + 'đ';
   };
 
+  // Determine which session to display
+  const displayedSession = React.useMemo(() => {
+    // If we have a selected session ID and active sessions, use the selected one
+    if (selectedSessionId && activeSessions.length > 0) {
+      const found = activeSessions.find(s => s.id === selectedSessionId);
+      if (found) return found;
+    }
+    
+    // If we have active sessions, use the first one (or selected if available)
+    if (activeSessions.length > 0) {
+      return activeSessions[0];
+    }
+    
+    // Fallback: convert activeSession to ParkingSession format if available
+    if (activeSession) {
+      return {
+        id: activeSession.session.id,
+        vehicleId: activeSession.vehicle.id,
+        licensePlate: activeSession.session.licensePlate,
+        parkingSlotId: activeSession.parkingSlot.id,
+        entryTime: activeSession.session.entryTime,
+        exitTime: null,
+        fee: null,
+        status: 'active' as const,
+        vehicle: activeSession.vehicle,
+        parkingSlot: {
+          id: activeSession.parkingSlot.id,
+          slotNumber: activeSession.parkingSlot.slotCode,
+          slot_code: activeSession.parkingSlot.slotCode,
+          status: activeSession.parkingSlot.status,
+          parkingLot: activeSession.parkingLot,
+        },
+      } as ParkingSession;
+    }
+    
+    return null;
+  }, [selectedSessionId, activeSessions, activeSession]);
+
+  // Set initial selected session when active sessions load
+  useEffect(() => {
+    if (activeSessions.length > 0 && !selectedSessionId) {
+      setSelectedSessionId(activeSessions[0].id);
+    } else if (activeSessions.length === 0 && activeSession) {
+      // If no active sessions from API but we have activeSession, clear selection
+      setSelectedSessionId(null);
+    }
+  }, [activeSessions, activeSession]);
+
   const handlePreviewFee = async () => {
     try {
       setIsLoadingPreview(true);
+      // Preview fee only works for current session, so we'll try it
+      // If it fails for non-current sessions, we'll show a message
       const result = await parkingSessionAPI.previewFee();
       setFeePreview(result);
     } catch (error: any) {
-      Alert.alert('Lỗi', error.message || 'Không thể xem trước tiền đỗ xe');
+      // If preview fails, it might be because the selected session is not the current one
+      if (error.message && error.message.includes('Không có phiên đỗ xe đang hoạt động')) {
+        Alert.alert('Thông báo', 'Chức năng xem trước tiền chỉ khả dụng cho phiên đỗ xe hiện tại. Vui lòng chọn phiên đỗ xe hiện tại để xem trước tiền.');
+      } else {
+        Alert.alert('Lỗi', error.message || 'Không thể xem trước tiền đỗ xe');
+      }
     } finally {
       setIsLoadingPreview(false);
     }
   };
 
   // Prepare current payment data
-  const currentPayment = activeSession
+  const currentPayment = displayedSession
     ? {
         amount: feePreview?.feePreview?.estimatedFee || null,
-        location: feePreview?.parkingSlot?.slotCode || activeSession.parkingSlot.slotCode || '',
-        startTime: feePreview?.feePreview?.entryTime 
-          ? formatDateTime(feePreview.feePreview.entryTime).time 
-          : formatDateTime(activeSession.session.entryTime).time,
+        location: displayedSession.parkingSlot.slotNumber || displayedSession.parkingSlot.slot_code || '',
+        startTime: formatDateTime(displayedSession.entryTime).time,
         endTime: null,
-        date: feePreview?.feePreview?.entryTime 
-          ? formatDateTime(feePreview.feePreview.entryTime).date 
-          : formatDateTime(activeSession.session.entryTime).date,
-        duration: feePreview?.feePreview?.exactDuration
-          ? `${feePreview.feePreview.exactDuration.hours} giờ${feePreview.feePreview.exactDuration.minutes > 0 ? ` ${feePreview.feePreview.exactDuration.minutes} phút` : ''}`
-          : (() => {
-              const hours = Math.floor(activeSession.session.durationHours);
-              const minutes = Math.round((activeSession.session.durationHours % 1) * 60);
-              if (hours > 0) {
-                return `${hours} giờ${minutes > 0 ? ` ${minutes} phút` : ''}`;
-              }
-              return `${minutes} phút`;
-            })(),
-        rate: feePreview?.parkingLot?.pricePerHour || activeSession.parkingLot.pricePerHour,
-        sessionId: activeSession.session.id,
+        date: formatDateTime(displayedSession.entryTime).date,
+        duration: calculateDuration(displayedSession.entryTime, null),
+        rate: displayedSession.parkingSlot.parkingLot.pricePerHour,
+        sessionId: displayedSession.id,
+        licensePlate: displayedSession.licensePlate || displayedSession.vehicle.licensePlate,
       }
     : null;
 
@@ -126,7 +172,7 @@ export default function PaymentScreen() {
           </TouchableOpacity>
         </ThemedView>
 
-        {(isLoadingActive || isLoadingHistory) ? (
+        {(isLoadingActive || isLoadingHistory || isLoadingActiveSessions) ? (
           <ThemedView style={styles.loadingContainer}>
             <ActivityIndicator size="large" color={PrimaryBlue} />
             <ThemedText style={styles.loadingText}>Đang tải...</ThemedText>
@@ -137,6 +183,24 @@ export default function PaymentScreen() {
               <ThemedView style={styles.content}>
                 {currentPayment ? (
                   <>
+                    {/* Vehicle Selector - Show if multiple active sessions */}
+                    {activeSessions.length > 1 && (
+                      <ThemedView style={styles.selectorContainer}>
+                        <ThemedText style={styles.selectorLabel}>Chọn biển số xe:</ThemedText>
+                        <TouchableOpacity
+                          style={styles.selectorButton}
+                          onPress={() => setShowVehicleSelector(true)}>
+                          <ThemedView style={styles.selectorButtonContent}>
+                            <IconSymbol name="car.fill" size={20} color={PrimaryBlue} />
+                            <ThemedText type="defaultSemiBold" style={styles.selectorButtonText}>
+                              {currentPayment.licensePlate}
+                            </ThemedText>
+                            <IconSymbol name="chevron.down" size={18} color="#9CA3AF" />
+                          </ThemedView>
+                        </TouchableOpacity>
+                      </ThemedView>
+                    )}
+
                     {/* Current Payment */}
                     <ThemedView style={styles.paymentCard}>
                       <ThemedView style={styles.paymentHeader}>
@@ -161,6 +225,14 @@ export default function PaymentScreen() {
                       </ThemedView>
 
                       <ThemedView style={styles.paymentDetails}>
+                        {activeSessions.length > 1 && (
+                          <ThemedView style={styles.detailRow}>
+                            <ThemedText style={styles.detailLabel}>Biển số xe:</ThemedText>
+                            <ThemedText type="defaultSemiBold" style={styles.detailValue}>
+                              {currentPayment.licensePlate}
+                            </ThemedText>
+                          </ThemedView>
+                        )}
                         <ThemedView style={styles.detailRow}>
                           <ThemedText style={styles.detailLabel}>Vị trí đỗ:</ThemedText>
                           <ThemedText type="defaultSemiBold" style={styles.detailValue}>
@@ -301,6 +373,62 @@ export default function PaymentScreen() {
             )}
           </ScrollView>
         )}
+
+        {/* Vehicle Selector Modal */}
+        <Modal
+          visible={showVehicleSelector}
+          transparent={true}
+          animationType="slide"
+          onRequestClose={() => setShowVehicleSelector(false)}>
+          <Pressable 
+            style={styles.modalOverlay}
+            onPress={() => setShowVehicleSelector(false)}>
+            <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
+              <ThemedView style={styles.modalHeader}>
+                <ThemedText type="subtitle" style={styles.modalTitle}>
+                  Chọn biển số xe
+                </ThemedText>
+                <TouchableOpacity
+                  onPress={() => setShowVehicleSelector(false)}
+                  style={styles.modalCloseButton}>
+                  <IconSymbol name="xmark.circle.fill" size={24} color={Gray900} />
+                </TouchableOpacity>
+              </ThemedView>
+              <ScrollView style={styles.modalBody}>
+                {activeSessions.map((session) => (
+                  <TouchableOpacity
+                    key={session.id}
+                    style={[
+                      styles.modalVehicleItem,
+                      selectedSessionId === session.id && styles.modalVehicleItemSelected
+                    ]}
+                    onPress={() => {
+                      setSelectedSessionId(session.id);
+                      setFeePreview(null); // Reset fee preview when changing session
+                      setShowVehicleSelector(false);
+                    }}>
+                    <ThemedView style={styles.modalVehicleLeft}>
+                      <ThemedView style={[styles.modalVehicleIconContainer, { backgroundColor: Blue100 }]}>
+                        <IconSymbol name="car.fill" size={20} color={PrimaryBlue} />
+                      </ThemedView>
+                      <ThemedView>
+                        <ThemedText type="defaultSemiBold" style={styles.modalVehiclePlate}>
+                          {session.licensePlate || session.vehicle.licensePlate}
+                        </ThemedText>
+                        <ThemedText style={styles.modalVehicleType}>
+                          {session.parkingSlot.parkingLot.name}
+                        </ThemedText>
+                      </ThemedView>
+                    </ThemedView>
+                    {selectedSessionId === session.id && (
+                      <IconSymbol name="checkmark.circle.fill" size={24} color={PrimaryBlue} />
+                    )}
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </Pressable>
+          </Pressable>
+        </Modal>
       </ThemedView>
     </SafeAreaView>
   );
@@ -560,6 +688,107 @@ const styles = StyleSheet.create({
     marginTop: 8,
     textAlign: 'center',
     fontStyle: 'italic',
+  },
+  selectorContainer: {
+    marginBottom: 16,
+  },
+  selectorLabel: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: Gray900,
+    marginBottom: 8,
+  },
+  selectorButton: {
+    backgroundColor: White,
+    borderRadius: 12,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 3,
+    borderWidth: 1,
+    borderColor: Gray100,
+  },
+  selectorButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  selectorButtonText: {
+    flex: 1,
+    fontSize: 16,
+    color: Gray900,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: White,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '80%',
+    paddingBottom: 20,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: Gray100,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: Gray900,
+  },
+  modalCloseButton: {
+    padding: 4,
+  },
+  modalBody: {
+    padding: 20,
+  },
+  modalVehicleItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 10,
+    backgroundColor: Gray50,
+    borderWidth: 1,
+    borderColor: Gray100,
+  },
+  modalVehicleItemSelected: {
+    backgroundColor: Blue100,
+    borderColor: PrimaryBlue,
+    borderWidth: 2,
+  },
+  modalVehicleLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  modalVehicleIconContainer: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalVehiclePlate: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: Gray900,
+    marginBottom: 4,
+  },
+  modalVehicleType: {
+    fontSize: 14,
+    color: '#6B7280',
   },
 });
 

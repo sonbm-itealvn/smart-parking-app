@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { StyleSheet, ScrollView, TouchableOpacity, View, ActivityIndicator } from 'react-native';
+import { StyleSheet, ScrollView, TouchableOpacity, View, ActivityIndicator, Modal, Pressable } from 'react-native';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -15,7 +15,10 @@ export default function HomeScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const { activeSession, isLoading: isLoadingActive } = useActiveParkingSession();
+  const { sessions: activeSessions, isLoading: isLoadingActiveSessions } = useParkingSessions('active');
   const { sessions: completedSessions, isLoading: isLoadingCompleted } = useParkingSessions('completed');
+  const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
+  const [showVehicleSelector, setShowVehicleSelector] = useState(false);
   const [stats, setStats] = useState({
     totalParkings: 0,
     totalSpent: 0,
@@ -65,21 +68,55 @@ export default function HomeScreen() {
     return `${diffMinutes} phút`;
   };
 
-  const currentParking = activeSession
+  // Determine which active session to display
+  const displayedSession = React.useMemo(() => {
+    if (selectedSessionId && activeSessions.length > 0) {
+      const found = activeSessions.find((s) => s.id === selectedSessionId);
+      if (found) return found;
+    }
+    if (activeSessions.length > 0) return activeSessions[0];
+    if (activeSession) {
+      return {
+        id: activeSession.session.id,
+        vehicleId: activeSession.vehicle.id,
+        licensePlate: activeSession.session.licensePlate,
+        parkingSlotId: activeSession.parkingSlot.id,
+        entryTime: activeSession.session.entryTime,
+        exitTime: null,
+        fee: null,
+        status: 'active' as const,
+        vehicle: activeSession.vehicle,
+        parkingSlot: {
+          id: activeSession.parkingSlot.id,
+          slotNumber: activeSession.parkingSlot.slotCode,
+          slot_code: activeSession.parkingSlot.slotCode,
+          status: activeSession.parkingSlot.status,
+          parkingLot: activeSession.parkingLot,
+        },
+      } as ParkingSession;
+    }
+    return null;
+  }, [selectedSessionId, activeSessions, activeSession]);
+
+  // Set default selection when active sessions change
+  useEffect(() => {
+    if (activeSessions.length > 0 && !selectedSessionId) {
+      setSelectedSessionId(activeSessions[0].id);
+    } else if (activeSessions.length === 0 && activeSession) {
+      setSelectedSessionId(null);
+    }
+  }, [activeSessions, activeSession, selectedSessionId]);
+
+  const currentParking = displayedSession
     ? {
         isParked: true,
-        location: activeSession.parkingSlot.slotCode || '',
-        startTime: formatDateTime(activeSession.session.entryTime).time,
-        date: formatDateTime(activeSession.session.entryTime).date,
-        duration: (() => {
-          const hours = Math.floor(activeSession.session.durationHours);
-          const minutes = Math.round((activeSession.session.durationHours % 1) * 60);
-          if (hours > 0) {
-            return `${hours} giờ${minutes > 0 ? ` ${minutes} phút` : ''}`;
-          }
-          return `${minutes} phút`;
-        })(),
-        sessionId: activeSession.session.id,
+        location: displayedSession.parkingSlot.slotNumber || displayedSession.parkingSlot.slot_code || '',
+        startTime: formatDateTime(displayedSession.entryTime).time,
+        date: formatDateTime(displayedSession.entryTime).date,
+        duration: calculateDuration(displayedSession.entryTime, displayedSession.exitTime),
+        sessionId: displayedSession.id,
+        licensePlate: displayedSession.licensePlate || displayedSession.vehicle?.licensePlate,
+        parkingLotName: displayedSession.parkingSlot.parkingLot.name,
       }
     : {
         isParked: false,
@@ -88,9 +125,11 @@ export default function HomeScreen() {
         date: '',
         duration: '',
         sessionId: null,
+        licensePlate: '',
+        parkingLotName: '',
       };
 
-  if (isLoadingActive || isLoadingCompleted) {
+  if (isLoadingActive || isLoadingActiveSessions || isLoadingCompleted) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
         <ThemedView style={[styles.container, styles.loadingContainer]}>
@@ -131,19 +170,44 @@ export default function HomeScreen() {
               </ThemedText>
             </ThemedView>
             {currentParking.isParked ? (
-              <ThemedView style={styles.parkingInfo}>
-                <ThemedText style={styles.parkingLocation}>{currentParking.location}</ThemedText>
-                <ThemedText style={styles.parkingTime}>
-                  Bắt đầu: {currentParking.startTime} - {currentParking.date}
-                </ThemedText>
-                <ThemedText style={styles.parkingDuration}>Thời gian: {currentParking.duration}</ThemedText>
-                <TouchableOpacity
-                  style={styles.button}
-                  onPress={() => router.push('/(tabs)/location')}
-                  activeOpacity={0.8}>
-                  <ThemedText style={styles.buttonText}>Xem vị trí</ThemedText>
-                </TouchableOpacity>
-              </ThemedView>
+              <>
+                {activeSessions.length > 1 && (
+                  <ThemedView style={styles.selectorContainer}>
+                    <ThemedText style={styles.selectorLabel}>Chọn xe đang đỗ:</ThemedText>
+                    <TouchableOpacity
+                      style={styles.selectorButton}
+                      onPress={() => setShowVehicleSelector(true)}>
+                      <ThemedView style={styles.selectorButtonContent}>
+                        <IconSymbol name="car.fill" size={20} color={PrimaryBlue} />
+                        <ThemedText type="defaultSemiBold" style={styles.selectorButtonText}>
+                          {currentParking.licensePlate}
+                        </ThemedText>
+                        <IconSymbol name="chevron.down" size={18} color="#9CA3AF" />
+                      </ThemedView>
+                    </TouchableOpacity>
+                  </ThemedView>
+                )}
+
+                <ThemedView style={styles.parkingInfo}>
+                  <ThemedText style={styles.parkingLocation}>{currentParking.location}</ThemedText>
+                  <ThemedText style={styles.parkingTime}>
+                    Biển số: {currentParking.licensePlate}
+                  </ThemedText>
+                  <ThemedText style={styles.parkingTime}>
+                    Bãi: {currentParking.parkingLotName}
+                  </ThemedText>
+                  <ThemedText style={styles.parkingTime}>
+                    Bắt đầu: {currentParking.startTime} - {currentParking.date}
+                  </ThemedText>
+                  <ThemedText style={styles.parkingDuration}>Thời gian: {currentParking.duration}</ThemedText>
+                  <TouchableOpacity
+                    style={styles.button}
+                    onPress={() => router.push('/(tabs)/location')}
+                    activeOpacity={0.8}>
+                    <ThemedText style={styles.buttonText}>Xem vị trí</ThemedText>
+                  </TouchableOpacity>
+                </ThemedView>
+              </>
             ) : (
               <ThemedView style={styles.noParking}>
                 <ThemedText style={styles.noParkingText}>Hiện tại không có xe đang đỗ</ThemedText>
@@ -220,6 +284,61 @@ export default function HomeScreen() {
           </ThemedView>
         </ScrollView>
       </ThemedView>
+
+      {/* Vehicle Selector Modal */}
+      <Modal
+        visible={showVehicleSelector}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowVehicleSelector(false)}>
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => setShowVehicleSelector(false)}>
+          <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
+            <ThemedView style={styles.modalHeader}>
+              <ThemedText type="subtitle" style={styles.modalTitle}>
+                Chọn xe đang đỗ
+              </ThemedText>
+              <TouchableOpacity
+                onPress={() => setShowVehicleSelector(false)}
+                style={styles.modalCloseButton}>
+                <IconSymbol name="xmark.circle.fill" size={24} color={Gray900} />
+              </TouchableOpacity>
+            </ThemedView>
+            <ScrollView style={styles.modalBody}>
+              {activeSessions.map((session) => (
+                <TouchableOpacity
+                  key={session.id}
+                  style={[
+                    styles.modalVehicleItem,
+                    selectedSessionId === session.id && styles.modalVehicleItemSelected,
+                  ]}
+                  onPress={() => {
+                    setSelectedSessionId(session.id);
+                    setShowVehicleSelector(false);
+                  }}>
+                  <ThemedView style={styles.modalVehicleLeft}>
+                    <ThemedView style={styles.modalVehicleIconContainer}>
+                      <IconSymbol name="car.fill" size={20} color={PrimaryBlue} />
+                    </ThemedView>
+                    <ThemedView>
+                      <ThemedText type="defaultSemiBold" style={styles.modalVehiclePlate}>
+                        {session.licensePlate || session.vehicle.licensePlate}
+                      </ThemedText>
+                      <ThemedText style={styles.modalVehicleType}>
+                        {session.parkingSlot.parkingLot.name}
+                      </ThemedText>
+                    </ThemedView>
+                  </ThemedView>
+                  {selectedSessionId === session.id && (
+                    <IconSymbol name="checkmark.circle.fill" size={24} color={PrimaryBlue} />
+                  )}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -424,6 +543,108 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     marginTop: 12,
+    color: '#6B7280',
+  },
+  selectorContainer: {
+    marginBottom: 12,
+  },
+  selectorLabel: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: Gray900,
+    marginBottom: 8,
+  },
+  selectorButton: {
+    backgroundColor: White,
+    borderRadius: 12,
+    padding: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 3,
+    borderWidth: 1,
+    borderColor: Gray100,
+  },
+  selectorButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  selectorButtonText: {
+    flex: 1,
+    fontSize: 16,
+    color: Gray900,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: White,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '80%',
+    paddingBottom: 20,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: Gray100,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: Gray900,
+  },
+  modalCloseButton: {
+    padding: 4,
+  },
+  modalBody: {
+    padding: 20,
+  },
+  modalVehicleItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 10,
+    backgroundColor: Gray50,
+    borderWidth: 1,
+    borderColor: Gray100,
+  },
+  modalVehicleItemSelected: {
+    backgroundColor: '#E0F2FE',
+    borderColor: PrimaryBlue,
+    borderWidth: 2,
+  },
+  modalVehicleLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  modalVehicleIconContainer: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#E0F2FE',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalVehiclePlate: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: Gray900,
+    marginBottom: 4,
+  },
+  modalVehicleType: {
+    fontSize: 14,
     color: '#6B7280',
   },
 });

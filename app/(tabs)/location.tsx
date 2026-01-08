@@ -8,7 +8,7 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Colors, PrimaryBlue, SuccessGreen, Gray50, Gray100, Gray900, White } from '@/constants/theme';
 import { useAuth } from '@/contexts/AuthContext';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useActiveParkingSession } from '@/hooks/useParkingSessions';
+import { useActiveParkingSession, useParkingSessions } from '@/hooks/useParkingSessions';
 import { useParkingLot } from '@/hooks/useParkingLot';
 
 const { width } = Dimensions.get('window');
@@ -16,15 +16,60 @@ const { width } = Dimensions.get('window');
 export default function LocationScreen() {
   const colors = Colors['light'];
   const { user } = useAuth();
-  const { activeSession, isLoading } = useActiveParkingSession();
-  const parkingLotId = activeSession?.parkingLot.id || null;
-  const { parkingLot, isLoading: isLoadingParkingLot, refetch: refetchParkingLot } = useParkingLot(parkingLotId);
+  const { activeSession, isLoading: isLoadingActive } = useActiveParkingSession();
+  const { sessions: activeSessions, isLoading: isLoadingActiveSessions } = useParkingSessions('active');
+  const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
+  const [showVehicleSelector, setShowVehicleSelector] = useState(false);
   
   const [imageDimensions, setImageDimensions] = useState<{ width: number; height: number } | null>(null);
   const [isMapModalVisible, setIsMapModalVisible] = useState(false);
   const [modalMapUrl, setModalMapUrl] = useState<string | null>(null);
   const scrollViewRef = useRef<ScrollView>(null);
   
+  // Determine which active session to show (support multiple vehicles)
+  const displayedSession = React.useMemo(() => {
+    if (selectedSessionId && activeSessions.length > 0) {
+      const found = activeSessions.find(s => s.id === selectedSessionId);
+      if (found) return found;
+    }
+    if (activeSessions.length > 0) {
+      return activeSessions[0];
+    }
+    if (activeSession) {
+      return {
+        id: activeSession.session.id,
+        vehicleId: activeSession.vehicle.id,
+        licensePlate: activeSession.session.licensePlate,
+        parkingSlotId: activeSession.parkingSlot.id,
+        entryTime: activeSession.session.entryTime,
+        exitTime: null,
+        fee: null,
+        status: 'active' as const,
+        vehicle: activeSession.vehicle,
+        parkingSlot: {
+          id: activeSession.parkingSlot.id,
+          slotNumber: activeSession.parkingSlot.slotCode,
+          slot_code: activeSession.parkingSlot.slotCode,
+          status: activeSession.parkingSlot.status,
+          parkingLot: activeSession.parkingLot,
+        },
+      };
+    }
+    return null;
+  }, [selectedSessionId, activeSessions, activeSession]);
+
+  // Set default selected session when list changes
+  React.useEffect(() => {
+    if (activeSessions.length > 0 && !selectedSessionId) {
+      setSelectedSessionId(activeSessions[0].id);
+    } else if (activeSessions.length === 0 && activeSession) {
+      setSelectedSessionId(null);
+    }
+  }, [activeSessions, activeSession, selectedSessionId]);
+
+  const parkingLotId = displayedSession?.parkingSlot?.parkingLot?.id || null;
+  const { parkingLot, isLoading: isLoadingParkingLot, refetch: refetchParkingLot } = useParkingLot(parkingLotId);
+
   // Store map URL when modal opens
   React.useEffect(() => {
     if (isMapModalVisible) {
@@ -142,24 +187,19 @@ export default function LocationScreen() {
       .join(' ');
   };
 
-  const parkingInfo = activeSession
+  const parkingInfo = displayedSession
     ? {
         isParked: true,
-        location: activeSession.parkingSlot.slotCode || '',
-        ...parseSlotNumber(activeSession.parkingSlot.slotCode),
+        location: displayedSession.parkingSlot.slotNumber || displayedSession.parkingSlot.slot_code || '',
+        ...parseSlotNumber(displayedSession.parkingSlot.slotNumber || displayedSession.parkingSlot.slot_code),
         floor: 'Tầng 1', // API không có floor info, có thể thêm sau
-        startTime: formatDateTime(activeSession.session.entryTime).time,
-        date: formatDateTime(activeSession.session.entryTime).date,
-        duration: (() => {
-          const hours = Math.floor(activeSession.session.durationHours);
-          const minutes = Math.round((activeSession.session.durationHours % 1) * 60);
-          if (hours > 0) {
-            return `${hours} giờ${minutes > 0 ? ` ${minutes} phút` : ''}`;
-          }
-          return `${minutes} phút`;
-        })(),
-        coordinates: activeSession.parkingSlot.coordinates,
-        polygonCenter: getPolygonCenter(activeSession.parkingSlot.coordinates),
+        startTime: formatDateTime(displayedSession.entryTime).time,
+        date: formatDateTime(displayedSession.entryTime).date,
+        duration: calculateDuration(displayedSession.entryTime, displayedSession.exitTime),
+        coordinates: (displayedSession as any).parkingSlot.coordinates || activeSession?.parkingSlot.coordinates || null,
+        polygonCenter: getPolygonCenter((displayedSession as any).parkingSlot.coordinates || activeSession?.parkingSlot.coordinates || null),
+        licensePlate: displayedSession.licensePlate || displayedSession.vehicle?.licensePlate,
+        parkingLotName: displayedSession.parkingSlot.parkingLot.name,
       }
     : {
         isParked: false,
@@ -205,7 +245,7 @@ export default function LocationScreen() {
     }
   }, [parkingLot?.map]);
 
-  if (isLoading || isLoadingParkingLot) {
+  if (isLoadingActive || isLoadingActiveSessions || isLoadingParkingLot) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
         <ThemedView style={[styles.container, styles.loadingContainer]}>
@@ -245,6 +285,24 @@ export default function LocationScreen() {
             <ThemedText type="title" style={styles.headerTitle}>Vị trí xe đang đỗ</ThemedText>
           </ThemedView>
 
+          {/* Vehicle Selector when multiple active sessions */}
+          {activeSessions.length > 1 && (
+            <ThemedView style={styles.selectorContainer}>
+              <ThemedText style={styles.selectorLabel}>Chọn xe đang đỗ:</ThemedText>
+              <TouchableOpacity
+                style={styles.selectorButton}
+                onPress={() => setShowVehicleSelector(true)}>
+                <ThemedView style={styles.selectorButtonContent}>
+                  <IconSymbol name="car.fill" size={20} color={PrimaryBlue} />
+                  <ThemedText type="defaultSemiBold" style={styles.selectorButtonText}>
+                    {parkingInfo.licensePlate}
+                  </ThemedText>
+                  <IconSymbol name="chevron.down" size={18} color="#9CA3AF" />
+                </ThemedView>
+              </TouchableOpacity>
+            </ThemedView>
+          )}
+
           {/* Current Parking Info */}
           <ThemedView style={styles.infoCard}>
             <ThemedView style={styles.infoHeader}>
@@ -258,19 +316,19 @@ export default function LocationScreen() {
               <ThemedView style={styles.infoRow}>
                 <ThemedText style={styles.infoLabel}>Địa điểm:</ThemedText>
                 <ThemedText type="defaultSemiBold" style={styles.infoValue}>
-                  {activeSession?.parkingLot.name || 'N/A'}
+                  {parkingInfo.parkingLotName || 'N/A'}
                 </ThemedText>
               </ThemedView>
               <ThemedView style={styles.infoRow}>
                 <ThemedText style={styles.infoLabel}>Vị trí:</ThemedText>
                 <ThemedText type="defaultSemiBold" style={styles.infoValue}>
-                  {activeSession?.parkingSlot.slotCode || 'N/A'}
+                  {parkingInfo.location || 'N/A'}
                 </ThemedText>
               </ThemedView>
               <ThemedView style={styles.infoRow}>
                 <ThemedText style={styles.infoLabel}>Biển số xe:</ThemedText>
                 <ThemedText type="defaultSemiBold" style={styles.infoValue}>
-                  {activeSession?.session.licensePlate || activeSession?.vehicle.licensePlate || 'N/A'}
+                  {parkingInfo.licensePlate || 'N/A'}
                 </ThemedText>
               </ThemedView>
               <ThemedView style={styles.infoRow}>
@@ -391,6 +449,61 @@ export default function LocationScreen() {
           </ThemedView>
         </ScrollView>
       </ThemedView>
+
+      {/* Vehicle Selector Modal */}
+      <Modal
+        visible={showVehicleSelector}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowVehicleSelector(false)}>
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => setShowVehicleSelector(false)}>
+          <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
+            <ThemedView style={styles.modalHeader}>
+              <ThemedText type="subtitle" style={styles.modalTitle}>
+                Chọn xe đang đỗ
+              </ThemedText>
+              <TouchableOpacity
+                onPress={() => setShowVehicleSelector(false)}
+                style={styles.modalCloseButton}>
+                <IconSymbol name="xmark.circle.fill" size={24} color={Gray900} />
+              </TouchableOpacity>
+            </ThemedView>
+            <ScrollView style={styles.modalBody}>
+              {activeSessions.map((session) => (
+                <TouchableOpacity
+                  key={session.id}
+                  style={[
+                    styles.modalVehicleItem,
+                    selectedSessionId === session.id && styles.modalVehicleItemSelected,
+                  ]}
+                  onPress={() => {
+                    setSelectedSessionId(session.id);
+                    setShowVehicleSelector(false);
+                  }}>
+                  <ThemedView style={styles.modalVehicleLeft}>
+                    <ThemedView style={styles.modalVehicleIconContainer}>
+                      <IconSymbol name="car.fill" size={20} color={PrimaryBlue} />
+                    </ThemedView>
+                    <ThemedView>
+                      <ThemedText type="defaultSemiBold" style={styles.modalVehiclePlate}>
+                        {session.licensePlate || session.vehicle.licensePlate}
+                      </ThemedText>
+                      <ThemedText style={styles.modalVehicleType}>
+                        {session.parkingSlot.parkingLot.name}
+                      </ThemedText>
+                    </ThemedView>
+                  </ThemedView>
+                  {selectedSessionId === session.id && (
+                    <IconSymbol name="checkmark.circle.fill" size={24} color={PrimaryBlue} />
+                  )}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Fullscreen Map Modal with Zoom */}
       <Modal
@@ -776,5 +889,92 @@ const styles = StyleSheet.create({
     backgroundColor: SuccessGreen,
     opacity: 0.3,
     transform: [{ scale: 2 }],
+  },
+  selectorContainer: {
+    marginHorizontal: 20,
+    marginBottom: 16,
+  },
+  selectorLabel: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: Gray900,
+    marginBottom: 8,
+  },
+  selectorButton: {
+    backgroundColor: White,
+    borderRadius: 12,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 3,
+    borderWidth: 1,
+    borderColor: Gray100,
+  },
+  selectorButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  selectorButtonText: {
+    flex: 1,
+    fontSize: 16,
+    color: Gray900,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: White,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '80%',
+    paddingBottom: 20,
+  },
+  modalBody: {
+    padding: 20,
+  },
+  modalVehicleItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 10,
+    backgroundColor: Gray50,
+    borderWidth: 1,
+    borderColor: Gray100,
+  },
+  modalVehicleItemSelected: {
+    backgroundColor: '#E0F2FE',
+    borderColor: PrimaryBlue,
+    borderWidth: 2,
+  },
+  modalVehicleLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  modalVehicleIconContainer: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#E0F2FE',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalVehiclePlate: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: Gray900,
+    marginBottom: 4,
+  },
+  modalVehicleType: {
+    fontSize: 14,
+    color: '#6B7280',
   },
 });

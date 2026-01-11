@@ -199,7 +199,7 @@ export default function LocationScreen() {
         coordinates: (displayedSession as any).parkingSlot.coordinates || activeSession?.parkingSlot.coordinates || null,
         polygonCenter: getPolygonCenter((displayedSession as any).parkingSlot.coordinates || activeSession?.parkingSlot.coordinates || null),
         licensePlate: displayedSession.licensePlate || displayedSession.vehicle?.licensePlate,
-        parkingLotName: displayedSession.parkingSlot.parkingLot.name,
+        parkingLotName: displayedSession.parkingSlot.parkingLot?.name || '',
       }
     : {
         isParked: false,

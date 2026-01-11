@@ -116,7 +116,7 @@ export default function HomeScreen() {
         duration: calculateDuration(displayedSession.entryTime, displayedSession.exitTime),
         sessionId: displayedSession.id,
         licensePlate: displayedSession.licensePlate || displayedSession.vehicle?.licensePlate,
-        parkingLotName: displayedSession.parkingSlot.parkingLot.name,
+        parkingLotName: displayedSession.parkingSlot.parkingLot?.name || '',
       }
     : {
         isParked: false,
@@ -326,7 +326,7 @@ export default function HomeScreen() {
                         {session.licensePlate || session.vehicle.licensePlate}
                       </ThemedText>
                       <ThemedText style={styles.modalVehicleType}>
-                        {session.parkingSlot.parkingLot.name}
+                        {session.parkingSlot.parkingLot?.name || ''}
                       </ThemedText>
                     </ThemedView>
                   </ThemedView>
